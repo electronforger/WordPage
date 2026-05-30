@@ -27,8 +27,6 @@ A minimalist full-screen writing app for macOS. Like an old-fashioned typewriter
 
 Open `Word&Page/Word&Page.xcodeproj` in Xcode and press `⌘R`.
 
-If you'd prefer not to build from source, see [Releases](../../releases) for a packaged `.dmg`.
-
 ## Project layout
 
 | File | Responsibility |
