@@ -9,24 +9,36 @@ struct ContentView: View {
     @Environment(Preferences.self) private var prefs
     @State private var text: String = ""
 
-    /// Transient knob state — never persisted. Paper width starts at 850 every
-    /// launch; font size starts at the persisted Preferences value.
+    /// Transient knob state — never persisted.
     @State private var paperWidth: CGFloat = 850
     @State private var fontSizeOverride: CGFloat? = nil
+    @State private var showInvisibles: Bool = true
 
     private var effectiveFontSize: CGFloat {
         fontSizeOverride ?? prefs.fontSize
     }
 
+    /// Mode-aware outline style — markdown documents use the markdown-style
+    /// preference, text documents use the text-style preference.
+    private var effectiveOutlineStyle: OutlineStyle {
+        switch DocumentManager.shared.mode {
+        case .markdown: prefs.outlineStyleMarkdown
+        case .text, nil: prefs.outlineStyle
+        }
+    }
+
     var body: some View {
         @Bindable var prefs = prefs
+        @Bindable var doc = DocumentManager.shared
         ZStack {
             PaperView(
-                outlineStyle: prefs.outlineStyle,
+                outlineStyle: effectiveOutlineStyle,
                 lineSpacing: prefs.lineSpacing,
                 fontName: prefs.fontName,
                 fontSize: effectiveFontSize,
                 inkColor: prefs.inkColor,
+                documentMode: DocumentManager.shared.mode ?? .text,
+                showInvisibles: showInvisibles,
                 text: $text
             )
             .frame(width: paperWidth)
@@ -52,6 +64,20 @@ struct ContentView: View {
                         label: "SIZE",
                         formatted: "\(Int(effectiveFontSize))pt"
                     )
+
+                    if DocumentManager.shared.mode == .markdown {
+                        VStack(spacing: 4) {
+                            Toggle("", isOn: $showInvisibles)
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
+                                .labelsHidden()
+                                .tint(.white.opacity(0.7))
+                            Text("INVISIBLES")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.55))
+                        }
+                        .padding(.top, 4)
+                    }
                 }
                 .padding(14)
                 .background(
@@ -69,9 +95,12 @@ struct ContentView: View {
             }
         }
         .background { canvasBackdrop }
-        .onChange(of: prefs.fontSize) { _, _ in
-            // Slider in Settings is the source of truth — drop any knob override.
-            fontSizeOverride = nil
+        .onChange(of: prefs.fontSize) { _, _ in fontSizeOverride = nil }
+        .sheet(isPresented: $doc.showingModeChooser) {
+            ModeChooserView(initialChoice: prefs.lastDocumentMode) { chosen in
+                prefs.lastDocumentMode = chosen
+                doc.confirmMode(chosen)
+            }
         }
     }
 
@@ -79,9 +108,7 @@ struct ContentView: View {
     private var canvasBackdrop: some View {
         Group {
             if let img = prefs.backgroundImage {
-                Image(nsImage: img)
-                    .resizable()
-                    .scaledToFill()
+                Image(nsImage: img).resizable().scaledToFill()
             } else {
                 prefs.backgroundColor
             }
@@ -94,9 +121,7 @@ struct ContentView: View {
     private var paperBackdrop: some View {
         Group {
             if let img = prefs.paperImage {
-                Image(nsImage: img)
-                    .resizable()
-                    .scaledToFill()
+                Image(nsImage: img).resizable().scaledToFill()
             } else {
                 prefs.paperColor
             }

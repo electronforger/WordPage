@@ -13,6 +13,8 @@ struct PaperView: NSViewRepresentable {
     let fontName: String
     let fontSize: CGFloat
     let inkColor: Color
+    let documentMode: DocumentMode
+    let showInvisibles: Bool
     @Binding var text: String
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -110,6 +112,14 @@ struct PaperView: NSViewRepresentable {
         // Renumber + rewrite all outline prefixes; this also overlays the
         // per-depth indented paragraph styles and the path attribute.
         textView.applyOutlineAttributes()
+
+        // In Markdown mode, apply live styling on top of the outline pass.
+        if documentMode == .markdown {
+            MarkdownLiveStyler.apply(to: storage,
+                                     baseFont: nsFont,
+                                     baseColor: ink,
+                                     showInvisibles: showInvisibles)
+        }
 
         // Push the updated content back to the SwiftUI binding asynchronously.
         let updatedText = storage.string

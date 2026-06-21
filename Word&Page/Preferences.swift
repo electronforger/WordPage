@@ -7,11 +7,16 @@ import SwiftUI
 import AppKit
 
 enum OutlineStyle: String, CaseIterable, Identifiable, Codable {
-    case decimal          // 1, 1.1, 1.1.1
-    case legal            // 1., 1.1., 1.1.1.
-    case alphaNumeric     // 1, A, i
-    case harvard          // I., A., 1., a., i.
-    case bulleted         // •, ◦, ▪
+    // Text modes
+    case decimal              // 1, 1.1, 1.1.1
+    case legal                // 1., 1.1., 1.1.1.
+    case alphaNumeric         // 1, A, i
+    case harvard              // I., A., 1., a., i.
+    case bulleted             // •, ◦, ▪
+
+    // Markdown modes
+    case markdownBullet       // - item
+    case markdownNumbered     // 1. item
 
     var id: String { rawValue }
     var displayName: String {
@@ -21,7 +26,25 @@ enum OutlineStyle: String, CaseIterable, Identifiable, Codable {
         case .alphaNumeric: "Alpha-numeric (1, A, i)"
         case .harvard: "Harvard (I., A., 1., a., i.)"
         case .bulleted: "Bulleted"
+        case .markdownBullet: "Bullet list (- item)"
+        case .markdownNumbered: "Numbered list (1. item)"
         }
+    }
+
+    /// True for styles used in Markdown documents.
+    var isMarkdown: Bool {
+        switch self {
+        case .markdownBullet, .markdownNumbered: true
+        default: false
+        }
+    }
+
+    static var textStyles: [OutlineStyle] {
+        [.decimal, .legal, .alphaNumeric, .harvard, .bulleted]
+    }
+
+    static var markdownStyles: [OutlineStyle] {
+        [.markdownBullet, .markdownNumbered]
     }
 }
 
@@ -49,6 +72,8 @@ private enum DefaultsKey {
     static let lineSpacing         = "wp.lineSpacing"
     static let saveBehavior        = "wp.saveBehavior"
     static let outlineStyle        = "wp.outlineStyle"
+    static let outlineStyleMd      = "wp.outlineStyleMarkdown"
+    static let lastDocumentMode    = "wp.lastDocumentMode"
     static let backgroundImagePath = "wp.backgroundImagePath"
     static let paperImagePath      = "wp.paperImagePath"
 }
@@ -86,8 +111,19 @@ final class Preferences {
     var saveBehavior: SaveBehavior {
         didSet { UserDefaults.standard.set(saveBehavior.rawValue, forKey: DefaultsKey.saveBehavior) }
     }
+    /// Outline style for Text documents (.wpage).
     var outlineStyle: OutlineStyle {
         didSet { UserDefaults.standard.set(outlineStyle.rawValue, forKey: DefaultsKey.outlineStyle) }
+    }
+
+    /// Outline style for Markdown documents (.md).
+    var outlineStyleMarkdown: OutlineStyle {
+        didSet { UserDefaults.standard.set(outlineStyleMarkdown.rawValue, forKey: DefaultsKey.outlineStyleMd) }
+    }
+
+    /// Last document mode the user chose; used to highlight the default in the chooser.
+    var lastDocumentMode: DocumentMode {
+        didSet { UserDefaults.standard.set(lastDocumentMode.rawValue, forKey: DefaultsKey.lastDocumentMode) }
     }
 
     // Image overrides
@@ -117,7 +153,15 @@ final class Preferences {
         self.saveBehavior = d.string(forKey: DefaultsKey.saveBehavior)
             .flatMap { SaveBehavior(rawValue: $0) } ?? .autosaveOnPause
         self.outlineStyle = d.string(forKey: DefaultsKey.outlineStyle)
-            .flatMap { OutlineStyle(rawValue: $0) } ?? .decimal
+            .flatMap { OutlineStyle(rawValue: $0) }
+            .flatMap { $0.isMarkdown ? nil : $0 } ?? .decimal
+
+        self.outlineStyleMarkdown = d.string(forKey: DefaultsKey.outlineStyleMd)
+            .flatMap { OutlineStyle(rawValue: $0) }
+            .flatMap { $0.isMarkdown ? $0 : nil } ?? .markdownBullet
+
+        self.lastDocumentMode = d.string(forKey: DefaultsKey.lastDocumentMode)
+            .flatMap { DocumentMode(rawValue: $0) } ?? .text
 
         let bgPath = d.string(forKey: DefaultsKey.backgroundImagePath)
         self.backgroundImagePath = bgPath

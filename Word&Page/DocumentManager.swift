@@ -8,15 +8,19 @@ import UniformTypeIdentifiers
 
 enum SaveFormat: Int, CaseIterable {
     case wpage = 0
-    case txt   = 1
-    case rtf   = 2
-    case pdf   = 3
+    case md    = 1
+    case txt   = 2
+    case rtf   = 3
+    case html  = 4
+    case pdf   = 5
 
     var displayName: String {
         switch self {
         case .wpage: "Word&Page Document (.wpage)"
+        case .md:    "Markdown (.md)"
         case .txt:   "Plain Text (.txt)"
         case .rtf:   "Rich Text (.rtf)"
+        case .html:  "HTML (.html)"
         case .pdf:   "PDF (.pdf)"
         }
     }
@@ -24,8 +28,10 @@ enum SaveFormat: Int, CaseIterable {
     var ext: String {
         switch self {
         case .wpage: "wpage"
+        case .md:    "md"
         case .txt:   "txt"
         case .rtf:   "rtf"
+        case .html:  "html"
         case .pdf:   "pdf"
         }
     }
@@ -33,18 +39,25 @@ enum SaveFormat: Int, CaseIterable {
     var utType: UTType {
         switch self {
         case .wpage: UTType(filenameExtension: "wpage") ?? .data
+        case .md:    UTType(filenameExtension: "md") ?? .plainText
         case .txt:   .plainText
         case .rtf:   .rtf
+        case .html:  .html
         case .pdf:   .pdf
         }
     }
 
+    /// True if this format is the native format for some mode (sets fileURL on save).
+    var isNative: Bool { self == .wpage || self == .md }
+
     static func detect(extension ext: String) -> SaveFormat {
         switch ext.lowercased() {
-        case "txt": .txt
-        case "rtf": .rtf
-        case "pdf": .pdf
-        default:    .wpage
+        case "md":    .md
+        case "txt":   .txt
+        case "rtf":   .rtf
+        case "html":  .html
+        case "pdf":   .pdf
+        default:      .wpage
         }
     }
 }
@@ -60,13 +73,34 @@ final class DocumentManager {
     var fileURL: URL? = nil
     var isDirty: Bool = false
 
-    // Hold the save-panel coordinator while a panel is open so it isn't
-    // deallocated mid-modal-session.
+    /// nil = mode chooser must be shown. Set by user via the chooser, or
+    /// auto-set by Open based on file extension.
+    var mode: DocumentMode? = nil
+
+    /// Toggle that drives the SwiftUI sheet in ContentView.
+    var showingModeChooser: Bool = true
+
     private var activePanelCoordinator: SavePanelCoordinator?
 
-    // MARK: - New / Open
+    // MARK: - Mode lifecycle
 
+    func confirmMode(_ m: DocumentMode) {
+        mode = m
+        clearTextStorage()
+        fileURL = nil
+        isDirty = false
+        showingModeChooser = false
+        if let prefsMode = (NSApp.delegate as Any?) as? Preferences {
+            _ = prefsMode // silence unused warning if needed
+        }
+    }
+
+    /// Triggered by File → New. Reshows the chooser.
     func newDocument() {
+        showingModeChooser = true
+    }
+
+    private func clearTextStorage() {
         guard let tv = textView, let storage = tv.textStorage else { return }
         let savedDelegate = tv.delegate
         tv.delegate = nil
@@ -75,19 +109,29 @@ final class DocumentManager {
                                   with: "")
         storage.endEditing()
         tv.delegate = savedDelegate
-        fileURL = nil
-        isDirty = false
     }
+
+    // MARK: - Open
 
     func openDocument() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [SaveFormat.wpage.utType]
+        panel.allowedContentTypes = [SaveFormat.wpage.utType, SaveFormat.md.utType]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
 
         let complete: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            try? self?.loadDocument(from: url)
+            let ext = url.pathExtension.lowercased()
+            // Pick mode from extension, then load.
+            if ext == "md" {
+                self?.mode = .markdown
+                self?.showingModeChooser = false
+                try? self?.loadMarkdown(from: url)
+            } else {
+                self?.mode = .text
+                self?.showingModeChooser = false
+                try? self?.loadWpage(from: url)
+            }
         }
         presentModal(panel, complete: complete)
     }
@@ -95,16 +139,29 @@ final class DocumentManager {
     // MARK: - Save / Save As
 
     func save() {
-        if let url = fileURL {
-            try? writeWpage(to: url)
-        } else {
+        guard let url = fileURL else {
             saveAs()
+            return
+        }
+        // Re-save to existing URL using the native format for current mode.
+        switch mode {
+        case .text:     try? writeWpage(to: url)
+        case .markdown: try? writeMarkdown(to: url)
+        case nil:       saveAs()
         }
     }
 
     func saveAs() {
-        let initialName = fileURL?.lastPathComponent ?? "Untitled.wpage"
-        let initialFormat = SaveFormat.detect(extension: (initialName as NSString).pathExtension)
+        let modeForFormats = mode ?? .text
+        let availableFormats: [SaveFormat] = {
+            switch modeForFormats {
+            case .text:     return [.wpage, .txt, .rtf, .pdf]
+            case .markdown: return [.md, .txt, .html, .pdf]
+            }
+        }()
+        let initialFormat: SaveFormat = availableFormats.first ?? .wpage
+        let initialName = fileURL?.lastPathComponent
+            ?? "Untitled.\(initialFormat.ext)"
 
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
@@ -113,7 +170,9 @@ final class DocumentManager {
         panel.allowedContentTypes = [initialFormat.utType]
         panel.nameFieldStringValue = initialName
 
-        let coordinator = SavePanelCoordinator(panel: panel, initial: initialFormat)
+        let coordinator = SavePanelCoordinator(panel: panel,
+                                               formats: availableFormats,
+                                               initial: initialFormat)
         activePanelCoordinator = coordinator
         panel.accessoryView = coordinator.accessoryView
 
@@ -121,7 +180,6 @@ final class DocumentManager {
             defer { self?.activePanelCoordinator = nil }
             guard response == .OK, let url = panel.url else { return }
             let chosen = coordinator.selectedFormat
-            // Ensure URL has correct extension matching the chosen format.
             let finalURL = url.pathExtension.lowercased() == chosen.ext
                 ? url
                 : url.deletingPathExtension().appendingPathExtension(chosen.ext)
@@ -133,25 +191,23 @@ final class DocumentManager {
     // MARK: - Write dispatcher
 
     private func performWrite(format: SaveFormat, to url: URL) {
-        switch format {
-        case .wpage:
-            do {
+        do {
+            switch format {
+            case .wpage:
                 try writeWpage(to: url)
                 fileURL = url
                 isDirty = false
-            } catch {
-                presentError("Could not save document", details: error.localizedDescription)
+            case .md:
+                try writeMarkdown(to: url)
+                fileURL = url
+                isDirty = false
+            case .txt:  try writeTxt(to: url)
+            case .rtf:  try writeRtf(to: url)
+            case .html: try writeHtml(to: url)
+            case .pdf:  writePdf(to: url)
             }
-        case .txt:
-            do { try writeTxt(to: url) } catch {
-                presentError("Could not export text", details: error.localizedDescription)
-            }
-        case .rtf:
-            do { try writeRtf(to: url) } catch {
-                presentError("Could not export RTF", details: error.localizedDescription)
-            }
-        case .pdf:
-            writePdf(to: url)
+        } catch {
+            presentError("Could not save document", details: error.localizedDescription)
         }
     }
 
@@ -195,6 +251,23 @@ final class DocumentManager {
         try data.write(to: url)
     }
 
+    private func writeHtml(to url: URL) throws {
+        // Use Apple's NSAttributedString markdown initializer to render, then
+        // emit the rendered text as HTML.
+        guard let tv = textView else { return }
+        let markdownText = renderMarkdownText(from: tv)
+        let attributed = (try? NSAttributedString(
+            markdown: markdownText,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? NSAttributedString(string: markdownText)
+        let range = NSRange(location: 0, length: attributed.length)
+        let attrs: [NSAttributedString.DocumentAttributeKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.html
+        ]
+        let data = try attributed.data(from: range, documentAttributes: attrs)
+        try data.write(to: url)
+    }
+
     private func writePdf(to url: URL) {
         guard let tv = textView, let storage = tv.textStorage else { return }
 
@@ -232,9 +305,150 @@ final class DocumentManager {
         op.run()
     }
 
-    // MARK: - Open / load (.wpage only)
+    // MARK: - Markdown round-trip
 
-    private func loadDocument(from url: URL) throws {
+    /// Walks paragraphs and emits markdown text. Outline paragraphs get
+    /// leading whitespace indentation per depth; non-outline paragraphs
+    /// emit as-is.
+    private func renderMarkdownText(from tv: PaperTextView) -> String {
+        guard let storage = tv.textStorage else { return tv.string }
+        let nsstr = storage.string as NSString
+        var out = ""
+        var loc = 0
+        while loc < nsstr.length {
+            let paraRange = nsstr.paragraphRange(
+                for: NSRange(location: loc, length: 0)
+            )
+            let raw = nsstr.substring(with: paraRange)
+            let hasNewline = raw.hasSuffix("\n")
+            let line = hasNewline ? String(raw.dropLast()) : raw
+
+            if let path = storage.attribute(.outlinePath,
+                                            at: paraRange.location,
+                                            effectiveRange: nil) as? [Int] {
+                // Indent step: 2 for bullets, 3 for numbered (since "1. " is 3 chars)
+                let stepIsBullet = !line.hasPrefix("0") && !line.hasPrefix("1")
+                    && line.first.map { $0 == "-" || $0 == "*" || $0 == "+" } == true
+                let step = stepIsBullet ? 2 : 3
+                let indent = String(repeating: " ",
+                                    count: max(path.count - 1, 0) * step)
+                out += indent + line
+            } else {
+                out += line
+            }
+            if hasNewline { out += "\n" }
+            let next = paraRange.location + paraRange.length
+            if next <= loc { break }
+            loc = next
+        }
+        return out
+    }
+
+    private func writeMarkdown(to url: URL) throws {
+        guard let tv = textView else { return }
+        let text = renderMarkdownText(from: tv)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Parses markdown text into in-buffer text + outline-path map.
+    /// Bullet markers (- * +) and numbered markers (1. 2. etc.) are recognized.
+    private func loadMarkdown(from url: URL) throws {
+        let data = try Data(contentsOf: url)
+        let raw = String(data: data, encoding: .utf8) ?? ""
+        applyMarkdown(raw)
+        fileURL = url
+        isDirty = false
+    }
+
+    private func applyMarkdown(_ raw: String) {
+        guard let tv = textView, let storage = tv.textStorage else { return }
+        let savedDelegate = tv.delegate
+        tv.delegate = nil
+
+        let lines = raw.components(separatedBy: "\n")
+        var bufferLines: [String] = []
+        var pathMap: [Int: [Int]] = [:]
+
+        for (i, line) in lines.enumerated() {
+            if let parsed = parseMarkdownListLine(line) {
+                bufferLines.append(parsed.cleanLine)
+                pathMap[i] = Array(repeating: 1, count: parsed.depth)
+            } else {
+                bufferLines.append(line)
+            }
+        }
+        let bufferText = bufferLines.joined(separator: "\n")
+
+        storage.beginEditing()
+        storage.replaceCharacters(in: NSRange(location: 0, length: storage.length),
+                                  with: bufferText)
+
+        // Reapply current font/color/paragraphStyle across the new text.
+        let fullRange = NSRange(location: 0, length: storage.length)
+        if let font = tv.typingAttributes[.font] {
+            storage.addAttribute(.font, value: font, range: fullRange)
+        }
+        if let color = tv.typingAttributes[.foregroundColor] {
+            storage.addAttribute(.foregroundColor, value: color, range: fullRange)
+        }
+        if let para = tv.typingAttributes[.paragraphStyle] {
+            storage.addAttribute(.paragraphStyle, value: para, range: fullRange)
+        }
+
+        // Apply outline path attributes per the parsed map.
+        let nsstr = storage.string as NSString
+        var loc = 0
+        var paraIndex = 0
+        while loc < nsstr.length {
+            let para = nsstr.paragraphRange(for: NSRange(location: loc, length: 0))
+            if let path = pathMap[paraIndex] {
+                storage.addAttribute(.outlinePath, value: path, range: para)
+            }
+            let next = para.location + para.length
+            if next <= loc { break }
+            loc = next
+            paraIndex += 1
+        }
+        storage.endEditing()
+
+        tv.delegate = savedDelegate
+        tv.applyOutlineAttributes()
+    }
+
+    private struct ParsedMarkdownLine {
+        let cleanLine: String   // line with leading whitespace stripped — "- foo" or "1. foo"
+        let depth: Int
+    }
+
+    private func parseMarkdownListLine(_ line: String) -> ParsedMarkdownLine? {
+        // Match (whitespace)(bullet or number)( space)(rest)
+        let leading = line.prefix { $0 == " " || $0 == "\t" }
+        let spaces = leading.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+        let trimmed = String(line.dropFirst(leading.count))
+
+        // Bullet marker
+        if let first = trimmed.first, "-*+".contains(first),
+           trimmed.dropFirst().first == " " {
+            let depth = spaces / 2 + 1
+            return ParsedMarkdownLine(cleanLine: "- " + String(trimmed.dropFirst(2)),
+                                      depth: max(depth, 1))
+        }
+        // Numbered marker: 1. , 2., 10.
+        let digits = trimmed.prefix(while: { $0.isNumber })
+        if !digits.isEmpty,
+           trimmed.dropFirst(digits.count).first == ".",
+           trimmed.dropFirst(digits.count + 1).first == " " {
+            let depth = spaces / 3 + 1
+            let rest = String(trimmed.dropFirst(digits.count + 2))
+            return ParsedMarkdownLine(cleanLine: "\(digits). " + rest,
+                                      depth: max(depth, 1))
+        }
+        return nil
+    }
+
+    // MARK: - .wpage open
+
+    private func loadWpage(from url: URL) throws {
         let data = try Data(contentsOf: url)
         let doc = try JSONDecoder().decode(DocFile.self, from: data)
         applyDoc(doc)
@@ -251,10 +465,6 @@ final class DocumentManager {
         storage.replaceCharacters(in: NSRange(location: 0, length: storage.length),
                                   with: doc.text)
 
-        // Apply current typing attributes (font / color / default paragraph style)
-        // across the entire loaded document. Without this, paragraphs that aren't
-        // outline lines end up with no font attribute and render at the system
-        // default size.
         let fullRange = NSRange(location: 0, length: storage.length)
         if let font = tv.typingAttributes[.font] {
             storage.addAttribute(.font, value: font, range: fullRange)
@@ -266,7 +476,6 @@ final class DocumentManager {
             storage.addAttribute(.paragraphStyle, value: para, range: fullRange)
         }
 
-        // Overlay outline path attributes per the saved map.
         let pathMap = Dictionary(uniqueKeysWithValues:
             doc.outlinePaths.map { ($0.paragraphIndex, $0.path) })
         let nsstr = storage.string as NSString
@@ -315,20 +524,22 @@ private final class SavePanelCoordinator: NSObject {
     private weak var panel: NSSavePanel?
     let accessoryView: NSView
     private let popup: NSPopUpButton
+    private let formats: [SaveFormat]
     private(set) var selectedFormat: SaveFormat
 
-    init(panel: NSSavePanel, initial: SaveFormat) {
+    init(panel: NSSavePanel, formats: [SaveFormat], initial: SaveFormat) {
         self.panel = panel
+        self.formats = formats
         self.selectedFormat = initial
 
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 38))
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 38))
         let label = NSTextField(labelWithString: "Format:")
         label.frame = NSRect(x: 10, y: 10, width: 60, height: 22)
         view.addSubview(label)
 
-        popup = NSPopUpButton(frame: NSRect(x: 70, y: 6, width: 300, height: 26))
-        popup.addItems(withTitles: SaveFormat.allCases.map(\.displayName))
-        popup.selectItem(at: initial.rawValue)
+        popup = NSPopUpButton(frame: NSRect(x: 70, y: 6, width: 340, height: 26))
+        popup.addItems(withTitles: formats.map(\.displayName))
+        if let idx = formats.firstIndex(of: initial) { popup.selectItem(at: idx) }
         view.addSubview(popup)
 
         self.accessoryView = view
@@ -338,11 +549,11 @@ private final class SavePanelCoordinator: NSObject {
     }
 
     @objc private func formatChanged(_ sender: NSPopUpButton) {
-        guard let format = SaveFormat(rawValue: sender.indexOfSelectedItem),
-              let panel = panel else { return }
+        let idx = sender.indexOfSelectedItem
+        guard idx >= 0 && idx < formats.count, let panel = panel else { return }
+        let format = formats[idx]
         selectedFormat = format
 
-        // Swap the filename extension and update allowed content types.
         let current = panel.nameFieldStringValue
         let base = (current as NSString).deletingPathExtension
         panel.nameFieldStringValue = "\(base).\(format.ext)"

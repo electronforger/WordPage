@@ -149,8 +149,13 @@ private struct BehaviorTab: View {
                     Text(s.displayName).tag(s)
                 }
             }
-            Picker("Outline Style", selection: $prefs.outlineStyle) {
-                ForEach(OutlineStyle.allCases) { s in
+            Picker("Text outline style", selection: $prefs.outlineStyle) {
+                ForEach(OutlineStyle.textStyles) { s in
+                    Text(s.displayName).tag(s)
+                }
+            }
+            Picker("Markdown outline style", selection: $prefs.outlineStyleMarkdown) {
+                ForEach(OutlineStyle.markdownStyles) { s in
                     Text(s.displayName).tag(s)
                 }
             }

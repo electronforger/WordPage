@@ -133,6 +133,12 @@ enum OutlineEngine {
         case .bulleted:
             let bullets = ["•", "◦", "▪", "▫"]
             return bullets[(max(path.count, 1) - 1) % bullets.count]
+        case .markdownBullet:
+            // Visible prefix is just "-"; indentation is supplied via paragraph
+            // style. Whitespace nesting is added on .md save.
+            return "-"
+        case .markdownNumbered:
+            return "\(path.last ?? 1)."
         }
     }
 
