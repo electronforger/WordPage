@@ -58,7 +58,8 @@ struct Word_PageApp: App {
     }
 }
 
-/// Forces the host window into full screen on first appearance.
+/// Forces the host window into full screen on first appearance, then shows
+/// the document-mode chooser once fullscreen is established.
 private struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -67,8 +68,18 @@ private struct WindowConfigurator: NSViewRepresentable {
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.isMovableByWindowBackground = true
-            if !window.styleMask.contains(.fullScreen) {
+            let alreadyFullScreen = window.styleMask.contains(.fullScreen)
+            if !alreadyFullScreen {
                 window.toggleFullScreen(nil)
+            }
+            // Wait long enough for the fullscreen animation to complete, then
+            // present the chooser (only if a document mode hasn't already
+            // been chosen via launching with a file open, etc.).
+            let delay = alreadyFullScreen ? 0.1 : 1.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                if DocumentManager.shared.mode == nil {
+                    DocumentManager.shared.showingModeChooser = true
+                }
             }
         }
         return view

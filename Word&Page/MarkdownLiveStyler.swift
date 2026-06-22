@@ -70,7 +70,39 @@ enum MarkdownLiveStyler {
                         markerLength: 1,
                         showInvisibles: showInvisibles)
 
-        // 4. Inline code: `code` — scale the monospace point size so its
+        // 4a. Strikethrough: ~~text~~
+        applyStrikethrough(storage: storage,
+                           text: text,
+                           fullRange: fullRange,
+                           baseColor: baseColor,
+                           showInvisibles: showInvisibles)
+
+        // 4b. Blockquote: > text
+        applyBlockquotes(storage: storage,
+                         text: text,
+                         nsstr: nsstr,
+                         fullRange: fullRange,
+                         baseFont: baseFont,
+                         baseColor: baseColor,
+                         showInvisibles: showInvisibles)
+
+        // 4c. Links and images: [text](url) and ![alt](src)
+        applyLinks(storage: storage,
+                   text: text,
+                   fullRange: fullRange,
+                   baseColor: baseColor,
+                   baseFont: baseFont,
+                   showInvisibles: showInvisibles)
+
+        // 4d. Line-start list markers: -, *, +, and 1. (when not already
+        // handled by the outline system). Always dimmed (never collapsed)
+        // since they're the structural cue for the line being a list item.
+        applyListMarkers(storage: storage,
+                         text: text,
+                         fullRange: fullRange,
+                         baseColor: baseColor)
+
+        // 5. Inline code: `code` — scale the monospace point size so its
         // x-height matches the body font's x-height (otherwise the mono font
         // reads visibly taller than surrounding text).
         let probe = NSFont.monospacedSystemFont(ofSize: baseFont.pointSize,
@@ -228,6 +260,242 @@ enum MarkdownLiveStyler {
                                  value: NSFont.systemFont(ofSize: 0.01),
                                  range: range)
         }
+    }
+
+    // MARK: - Strikethrough
+
+    private static func applyStrikethrough(storage: NSTextStorage,
+                                           text: String,
+                                           fullRange: NSRange,
+                                           baseColor: NSColor,
+                                           showInvisibles: Bool) {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"~~([^~\n]+)~~"#,
+            options: []
+        ) else { return }
+        regex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
+            guard let match = match else { return }
+            let innerRange = match.range(at: 1)
+            storage.addAttribute(.strikethroughStyle,
+                                 value: NSUnderlineStyle.single.rawValue,
+                                 range: innerRange)
+            storage.addAttribute(.strikethroughColor,
+                                 value: baseColor,
+                                 range: innerRange)
+            let leftRange = NSRange(location: match.range.location, length: 2)
+            let rightRange = NSRange(
+                location: match.range.location + match.range.length - 2,
+                length: 2
+            )
+            styleMarker(storage: storage, range: leftRange,
+                        baseColor: baseColor, showInvisibles: showInvisibles)
+            styleMarker(storage: storage, range: rightRange,
+                        baseColor: baseColor, showInvisibles: showInvisibles)
+        }
+    }
+
+    // MARK: - Blockquotes
+
+    private static func applyBlockquotes(storage: NSTextStorage,
+                                         text: String,
+                                         nsstr: NSString,
+                                         fullRange: NSRange,
+                                         baseFont: NSFont,
+                                         baseColor: NSColor,
+                                         showInvisibles: Bool) {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"^>\s"#,
+            options: [.anchorsMatchLines]
+        ) else { return }
+
+        let italicFont = italic(of: baseFont)
+        let bigMarkerFont = NSFontManager.shared.convert(
+            NSFont(name: baseFont.fontName,
+                   size: baseFont.pointSize * 1.6) ?? baseFont,
+            toHaveTrait: .boldFontMask
+        )
+        let accent = NSColor(srgbRed: 251.0 / 255.0,
+                             green: 188.0 / 255.0,
+                             blue: 95.0 / 255.0,
+                             alpha: 1.0)
+
+        regex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
+            guard let match = match else { return }
+            let para = nsstr.paragraphRange(
+                for: NSRange(location: match.range.location, length: 0)
+            )
+
+            // Hanging-indent paragraph style: the `>` glyph hangs near the
+            // left margin; content is indented; wrapped lines align to the
+            // content indent. Adds vertical breathing room above and below.
+            let pStyle = NSMutableParagraphStyle()
+            pStyle.firstLineHeadIndent = 8
+            pStyle.headIndent = 44
+            pStyle.paragraphSpacingBefore = baseFont.pointSize * 0.55
+            pStyle.paragraphSpacing = baseFont.pointSize * 0.45
+            storage.addAttribute(.paragraphStyle, value: pStyle, range: para)
+
+            // Italicize + slightly mute the content past `> `.
+            let contentStart = match.range.location + match.range.length
+            let contentLen = max(0, para.location + para.length - contentStart)
+            if contentLen > 0 {
+                let contentRange = NSRange(location: contentStart,
+                                           length: contentLen)
+                storage.addAttribute(.font, value: italicFont, range: contentRange)
+                storage.addAttribute(.foregroundColor,
+                                     value: baseColor.withAlphaComponent(0.78),
+                                     range: contentRange)
+            }
+
+            // The `>` itself becomes a large ghosted accent glyph — the visual
+            // "quote mark" cue the user expected.
+            let markerRange = NSRange(location: match.range.location, length: 1)
+            storage.addAttribute(.font, value: bigMarkerFont, range: markerRange)
+            storage.addAttribute(.foregroundColor,
+                                 value: accent.withAlphaComponent(0.45),
+                                 range: markerRange)
+
+            // The space between `>` and content: respect the invisibles toggle.
+            let trailing = NSRange(location: match.range.location + 1,
+                                   length: 1)
+            styleMarker(storage: storage, range: trailing,
+                        baseColor: baseColor, showInvisibles: showInvisibles)
+        }
+    }
+
+    // MARK: - Links and images
+
+    private static func applyLinks(storage: NSTextStorage,
+                                   text: String,
+                                   fullRange: NSRange,
+                                   baseColor: NSColor,
+                                   baseFont: NSFont,
+                                   showInvisibles: Bool) {
+        let accent = NSColor(srgbRed: 251.0 / 255.0,
+                             green: 188.0 / 255.0,
+                             blue: 95.0 / 255.0,
+                             alpha: 1.0)
+        // Image:   !\[alt\]\(src\)
+        // Link:    \[text\]\(url\)
+        let combined = #"(!?)\[([^\]\n]+)\]\(([^)\n]+)\)"#
+        guard let regex = try? NSRegularExpression(
+            pattern: combined,
+            options: []
+        ) else { return }
+        let italicFont = italic(of: baseFont)
+        let nsstr = text as NSString
+        regex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
+            guard let match = match else { return }
+            let bang = match.range(at: 1)
+            let inner = match.range(at: 2)
+            let urlRange = match.range(at: 3)
+            let isImage = bang.length > 0
+
+            if isImage {
+                // Image alt text — read as descriptive placeholder, not a link.
+                // Italic + a muted grey distinguishes it from link text.
+                storage.addAttribute(.font, value: italicFont, range: inner)
+                storage.addAttribute(
+                    .foregroundColor,
+                    value: baseColor.withAlphaComponent(0.55),
+                    range: inner
+                )
+            } else {
+                // Link text — accent + underline + actually clickable.
+                storage.addAttribute(.foregroundColor, value: accent, range: inner)
+                storage.addAttribute(.underlineStyle,
+                                     value: NSUnderlineStyle.single.rawValue,
+                                     range: inner)
+                storage.addAttribute(.underlineColor,
+                                     value: accent.withAlphaComponent(0.7),
+                                     range: inner)
+                // Wire up the URL so the link is actually live.
+                if urlRange.location != NSNotFound {
+                    let urlText = nsstr.substring(with: urlRange)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let url = URL(string: urlText) {
+                        storage.addAttribute(.link, value: url, range: inner)
+                    }
+                }
+            }
+
+            // Dim the punctuation surrounding it: ! [ ] ( url )
+            if bang.length > 0 {
+                styleMarker(storage: storage, range: bang,
+                            baseColor: baseColor, showInvisibles: showInvisibles)
+            }
+            let openBracket = NSRange(location: inner.location - 1, length: 1)
+            let closeBracket = NSRange(location: inner.location + inner.length,
+                                       length: 1)
+            let openParen = NSRange(location: closeBracket.location + 1,
+                                    length: 1)
+            let closeParen = NSRange(
+                location: match.range.location + match.range.length - 1,
+                length: 1
+            )
+            styleMarker(storage: storage, range: openBracket,
+                        baseColor: baseColor, showInvisibles: showInvisibles)
+            styleMarker(storage: storage, range: closeBracket,
+                        baseColor: baseColor, showInvisibles: showInvisibles)
+            styleMarker(storage: storage, range: openParen,
+                        baseColor: baseColor, showInvisibles: showInvisibles)
+            styleMarker(storage: storage, range: closeParen,
+                        baseColor: baseColor, showInvisibles: showInvisibles)
+            styleMarker(storage: storage, range: urlRange,
+                        baseColor: baseColor, showInvisibles: showInvisibles)
+        }
+    }
+
+    // MARK: - Line-start list markers
+
+    /// Dims `-`, `*`, `+`, and `\d+.` markers at the start of a line so
+    /// manually typed lists still read like lists. Always dim — never
+    /// collapsed — since the marker is the only cue that the line is a list.
+    private static func applyListMarkers(storage: NSTextStorage,
+                                         text: String,
+                                         fullRange: NSRange,
+                                         baseColor: NSColor) {
+        // Bullets
+        if let bulletRegex = try? NSRegularExpression(
+            pattern: #"^[ \t]*([-*+]) "#,
+            options: [.anchorsMatchLines]
+        ) {
+            bulletRegex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
+                guard let match = match else { return }
+                let markerRange = match.range(at: 1)
+                let trailing = NSRange(
+                    location: markerRange.location + markerRange.length,
+                    length: 1
+                )
+                dim(storage: storage, range: markerRange, baseColor: baseColor)
+                dim(storage: storage, range: trailing, baseColor: baseColor)
+            }
+        }
+        // Numbered
+        if let numRegex = try? NSRegularExpression(
+            pattern: #"^[ \t]*(\d+\.) "#,
+            options: [.anchorsMatchLines]
+        ) {
+            numRegex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
+                guard let match = match else { return }
+                let markerRange = match.range(at: 1)
+                let trailing = NSRange(
+                    location: markerRange.location + markerRange.length,
+                    length: 1
+                )
+                dim(storage: storage, range: markerRange, baseColor: baseColor)
+                dim(storage: storage, range: trailing, baseColor: baseColor)
+            }
+        }
+    }
+
+    private static func dim(storage: NSTextStorage,
+                            range: NSRange,
+                            baseColor: NSColor) {
+        guard range.location != NSNotFound, range.length > 0 else { return }
+        storage.addAttribute(.foregroundColor,
+                             value: baseColor.withAlphaComponent(0.35),
+                             range: range)
     }
 
     // MARK: - Font helpers

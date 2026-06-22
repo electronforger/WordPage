@@ -77,8 +77,12 @@ final class DocumentManager {
     /// auto-set by Open based on file extension.
     var mode: DocumentMode? = nil
 
-    /// Toggle that drives the SwiftUI sheet in ContentView.
-    var showingModeChooser: Bool = true
+    /// Toggle that drives the SwiftUI chooser overlay in ContentView.
+    /// Starts false; the WindowConfigurator flips it true after the window
+    /// finishes entering full screen so the chooser appears on top of the
+    /// fullscreen window (not before, which prevents the fullscreen
+    /// transition from happening).
+    var showingModeChooser: Bool = false
 
     private var activePanelCoordinator: SavePanelCoordinator?
 

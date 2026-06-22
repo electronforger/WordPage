@@ -95,13 +95,22 @@ struct ContentView: View {
             }
         }
         .background { canvasBackdrop }
-        .onChange(of: prefs.fontSize) { _, _ in fontSizeOverride = nil }
-        .sheet(isPresented: $doc.showingModeChooser) {
-            ModeChooserView(initialChoice: prefs.lastDocumentMode) { chosen in
-                prefs.lastDocumentMode = chosen
-                doc.confirmMode(chosen)
+        .overlay {
+            if doc.showingModeChooser {
+                ZStack {
+                    Color.black.opacity(0.45)
+                        .ignoresSafeArea()
+                    ModeChooserView(initialChoice: prefs.lastDocumentMode) { chosen in
+                        prefs.lastDocumentMode = chosen
+                        doc.confirmMode(chosen)
+                    }
+                }
+                .transition(.opacity)
+                .zIndex(1000)
             }
         }
+        .animation(.easeInOut(duration: 0.2), value: doc.showingModeChooser)
+        .onChange(of: prefs.fontSize) { _, _ in fontSizeOverride = nil }
     }
 
     @ViewBuilder
